@@ -28,7 +28,7 @@
     "electron-updater": "^6.3.9",
     "fix-path": "^5.0.0",
     "lucide-react": "^0.554.0",
-    "node-pty": "^1.0.0",
+    "node-pty": "1.1.0-beta39",
     "tailwind-merge": "^3.4.0",
     "tree-kill": "^1.2.2",
     "uuid": "^13.0.0",
