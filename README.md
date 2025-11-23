@@ -1,6 +1,6 @@
 ⚡️ ServiceHub
 
-你的本地微服务管理指挥官。
+你的本地服务管理。
 一个基于 Electron + React 的桌面端工具，用于统一管理、启动和监控多个本地开发服务。
 
 📖 简介 (Introduction)
