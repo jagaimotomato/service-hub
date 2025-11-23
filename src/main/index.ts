@@ -5,6 +5,9 @@ import icon from '../../resources/icon.png?asset'
 import { spawn, ChildProcess } from 'child_process'
 import kill from 'tree-kill'
 import Store from 'electron-store' // 导入存储库
+import fixPath from 'fix-path' // 引入库
+
+fixPath()
 
 // 初始化 Store
 // schema 定义数据的类型，保证数据安全
@@ -61,6 +64,96 @@ app.whenReady().then(() => {
   })
 
   // IPC: 获取服务列表
+  ipcMain.handle('service:start', (event, id: string, cwd: string, commandStr: string) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    if (processMap.has(id)) return false
+
+    try {
+      console.log(`[Start] ID:${id} Dir:${cwd} Cmd:${commandStr}`)
+      const [cmd, ...args] = commandStr.split(' ')
+
+      const child = spawn(cmd, args, {
+        cwd,
+        shell: true,
+        // 解决 Mac/Linux GUI 环境变量缺失的关键：
+        env: {
+          ...process.env,
+          PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+          FORCE_COLOR: '1'
+        }
+      })
+
+      processMap.set(id, child)
+
+      const sendLog = (data: Buffer | string): void => {
+        if (!window || window.isDestroyed()) return
+        window.webContents.send(`log:${id}`, data.toString())
+      }
+
+      // 1. 监听标准输出
+      child.stdout?.on('data', sendLog)
+      child.stderr?.on('data', sendLog)
+
+      // 2.【新增】监听启动错误 (比如 spawn 直接失败)
+      child.on('error', (err) => {
+        console.error(`[Error] ID:${id}`, err)
+        sendLog(`\x1b[31m[System Error] Failed to spawn process: ${err.message}\x1b[0m\r\n`)
+        processMap.delete(id)
+        if (window && !window.isDestroyed()) {
+          window.webContents.send(`exit:${id}`) // 通知前端已退出
+        }
+      })
+
+      // 3. 监听退出
+      child.on('close', (code) => {
+        console.log(`[Exit] ID:${id} Code:${code}`)
+        processMap.delete(id)
+        if (window && !window.isDestroyed()) {
+          window.webContents.send(`exit:${id}`) // 通知前端已退出
+        }
+      })
+
+      return true
+    } catch (error: unknown) {
+      console.error(error)
+      // 如果同步代码报错，直接发日志给前端
+      if (window && !window.isDestroyed()) {
+        window.webContents.send(`log:${id}`, `\x1b[31m[System Error] ${error.message}\x1b[0m\r\n`)
+      }
+      return false
+    }
+  })
+
+  // 停止服务 (健壮性修复)
+  ipcMain.handle('service:stop', (_event, id: string) => {
+    const child = processMap.get(id)
+
+    // 【关键修复】如果 map 里找不到这个 id，说明进程早就挂了
+    // 这时候直接返回 true，让前端把状态改成 stopped
+    if (!child) {
+      console.log(`[Stop] Process ${id} not found, assuming stopped.`)
+      return true
+    }
+
+    if (child.pid) {
+      try {
+        kill(child.pid, 'SIGKILL', (err) => {
+          if (err) {
+            console.error('[Stop] Kill failed (maybe already dead):', err)
+            // 杀进程失败通常是因为它已经不在了，也可以视为成功
+          }
+          processMap.delete(id)
+        })
+      } catch (e) {
+        console.error('[Stop] Exception during kill:', e)
+        processMap.delete(id)
+      }
+    } else {
+      processMap.delete(id)
+    }
+
+    return true // 总是返回成功
+  })
   ipcMain.handle('service:list', () => {
     // 从本地存储读取
     const services = store.get('services', [])
@@ -82,60 +175,6 @@ app.whenReady().then(() => {
     if (canceled) return undefined
     return filePaths[0]
   })
-
-  // IPC: 启动服务
-  ipcMain.handle('service:start', (event, id: string, cwd: string, commandStr: string) => {
-    const window = BrowserWindow.fromWebContents(event.sender)
-    if (processMap.has(id)) return false
-
-    try {
-      console.log(`[Start] ID:${id} Dir:${cwd} Cmd:${commandStr}`)
-      const [cmd, ...args] = commandStr.split(' ')
-
-      const child = spawn(cmd, args, {
-        cwd,
-        shell: true,
-        env: { ...process.env, FORCE_COLOR: '1' }
-      })
-
-      processMap.set(id, child)
-
-      const sendLog = (data: Buffer | string) => {
-        if (!window || window.isDestroyed()) return
-        window.webContents.send(`log:${id}`, data.toString())
-      }
-
-      child.stdout?.on('data', sendLog)
-      child.stderr?.on('data', sendLog)
-
-      child.on('close', (code) => {
-        console.log(`[Exit] ID:${id} Code:${code}`)
-        processMap.delete(id)
-        if (window && !window.isDestroyed()) {
-          window.webContents.send(`exit:${id}`)
-        }
-      })
-
-      return true
-    } catch (error) {
-      console.error(error)
-      return false
-    }
-  })
-
-  // IPC: 停止服务
-  ipcMain.handle('service:stop', (_event, id: string) => {
-    const child = processMap.get(id)
-    if (child && child.pid) {
-      kill(child.pid, 'SIGKILL', (err) => {
-        if (err) console.error('Kill failed:', err)
-        processMap.delete(id)
-      })
-      return true
-    }
-    return false
-  })
-
   createWindow()
 
   app.on('activate', function () {

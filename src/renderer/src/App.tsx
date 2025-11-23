@@ -1,13 +1,13 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import Sidebar from './components/Sidebar'
 import ServiceDetail from './components/ServiceDetail'
 import { Service } from './types'
-import { v4 as uuidv4 } from 'uuid' // npm install uuid @types/uuid
+import { v4 as uuidv4 } from 'uuid'
 
 function App(): React.JSX.Element {
   const [services, setServices] = useState<Service[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
-  const [loaded, setLoaded] = useState(false) // 标记是否加载完成，防止初始空数据覆盖本地存储
+  const [loaded, setLoaded] = useState(false)
 
   // 1. 初始化：从本地存储加载配置
   useEffect(() => {
@@ -15,10 +15,10 @@ function App(): React.JSX.Element {
       try {
         const savedServices = await window.api.getServices()
         if (Array.isArray(savedServices)) {
-          // Fix: Explicitly type the array as Service[] to prevent 'string' inference
+          // 显式指定类型，防止 status 类型推断错误
           const resetServices: Service[] = savedServices.map((s: Service) => ({
             ...s,
-            status: 'stopped'
+            status: 'stopped' // 重启APP默认重置为停止状态
           }))
 
           setServices(resetServices)
@@ -37,38 +37,29 @@ function App(): React.JSX.Element {
 
   // 2. 自动保存：当 services 发生变化时，保存到本地
   useEffect(() => {
-    if (!loaded) return // 如果还没加载完，不要保存空数组
+    if (!loaded) return
 
-    // 过滤掉 status 字段再保存，或者保存也没关系，因为加载时会重置
-    // 这里我们直接保存，因为上面加载逻辑已经处理了重置
     window.api.saveServices(services)
   }, [services, loaded])
 
-  // 3. 全局监听服务意外退出
+  // 3. 全局监听服务意外退出 (Backend 通知 Frontend)
+  // 修复：这里之前错误复制了初始化代码，现在放的是正确的监听逻辑
   useEffect(() => {
-    ;(async () => {
-      try {
-        const savedServices = await window.api.getServices()
-        if (Array.isArray(savedServices)) {
-          // 🛠️ 修改这里：显式指定类型 : Service[]
-          const resetServices: Service[] = savedServices.map((s: Service) => ({
-            ...s,
-            status: 'stopped' // TS 现在知道这必须符合 Service 类型
-          }))
-
-          setServices(resetServices)
-
-          if (resetServices.length > 0) {
-            setActiveId(resetServices[0].id)
-          }
-        }
-      } catch (err) {
-        console.error('Failed to load services:', err)
-      } finally {
-        setLoaded(true)
+    const unsubs: (() => void)[] = []
+    services.forEach((s) => {
+      // 只要服务不是 stopped，就监听它的 exit 事件
+      if (s.status !== 'stopped') {
+        const unsub = window.api.onExit(s.id, () => {
+          console.log(`Service ${s.name} exited unexpected.`)
+          setServices((prev) =>
+            prev.map((item) => (item.id === s.id ? { ...item, status: 'stopped' } : item))
+          )
+        })
+        unsubs.push(unsub)
       }
-    })()
-  }, [])
+    })
+    return () => unsubs.forEach((fn) => fn())
+  }, [services])
 
   // --- Actions ---
 
@@ -94,25 +85,21 @@ function App(): React.JSX.Element {
 
     // 1. 检查是否正在运行
     if (service.status === 'running') {
-      // 二次确认
       const confirmed = window.confirm(
         `服务 "${service.name}" 正在运行中。\n\n确定要停止并删除它吗？`
       )
+      if (!confirmed) return
 
-      if (!confirmed) return // 用户取消
-
-      // 先停止服务
       await window.api.stopService(id)
     } else {
-      // 可选：即使没运行，为了防止手滑，也可以加个普通确认
       if (!window.confirm(`确定要删除 "${service.name}" 吗？`)) return
     }
 
-    // 2. 从列表中移除 (state更新会触发 useEffect 自动保存到 electron-store)
+    // 2. 从 UI移除
     const newServices = services.filter((s) => s.id !== id)
     setServices(newServices)
 
-    // 3. 如果删除的是当前选中的服务，需要切换选中项
+    // 3. 修正选中项
     if (activeId === id) {
       setActiveId(newServices.length > 0 ? newServices[0].id : null)
     }
@@ -123,18 +110,17 @@ function App(): React.JSX.Element {
     if (!service) return
 
     if (service.status === 'running') {
-      // 执行停止
+      // === 停止 ===
+      setServices((prev) => prev.map((s) => (s.id === id ? { ...s, status: 'stopped' } : s)))
       await window.api.stopService(id)
-      // 状态更新通常依赖 onExit 回调，但为了UI响应快，可以先手动设置
-      // 这里我们依赖 onExit 的回调来改变状态，更加准确
     } else {
-      // 执行启动
+      // === 启动 ===
       if (!service.cwd || !service.command) {
         alert('Please configure Working Directory and Command first.')
         return
       }
 
-      // 乐观更新 UI
+      // 乐观更新
       setServices((prev) => prev.map((s) => (s.id === id ? { ...s, status: 'running' } : s)))
 
       const success = await window.api.startService(id, service.cwd, service.command)
@@ -163,7 +149,7 @@ function App(): React.JSX.Element {
         onSelect={setActiveId}
         onAdd={handleAddService}
         onToggleStatus={handleToggleStatus}
-        onDelete={handleDeleteService} // 👈 别忘了把函数传给 Sidebar
+        onDelete={handleDeleteService}
       />
 
       <div className="flex-1 flex flex-col h-full bg-[#0d1117]">
