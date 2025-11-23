@@ -66,5 +66,27 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/jagaimotomato/service-hub.git"
+  },
+  "build": {
+    "appId": "com.yourname.servicehub",
+    "productName": "ServiceHub",
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "resources/icon.ico"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "icon": "resources/icon.icns"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "icon": "resources/icon.png"
+    }
   }
 }
