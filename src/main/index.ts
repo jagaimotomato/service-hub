@@ -118,7 +118,10 @@ app.whenReady().then(() => {
       console.error(error)
       // 如果同步代码报错，直接发日志给前端
       if (window && !window.isDestroyed()) {
-        window.webContents.send(`log:${id}`, `\x1b[31m[System Error] ${error.message}\x1b[0m\r\n`)
+        window.webContents.send(
+          `log:${id}`,
+          `\x1b[31m[System Error] ${error instanceof Error ? error.message : String(error)}\x1b[0m\r\n`
+        )
       }
       return false
     }
