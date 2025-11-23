@@ -71,7 +71,7 @@ pnpm (推荐) 或 npm/yarn
 
 安装依赖
 
-git clone [https://github.com/your-username/service-hub.git](https://github.com/your-username/service-hub.git)
+git clone [https://github.com/jagaimotomato/service-hub.git](https://github.com/jagaimotomato/service-hub.git)
 cd service-hub
 pnpm install
 
