@@ -84,11 +84,41 @@ function App(): React.JSX.Element {
     setActiveId(newService.id)
   }
 
-  const handleUpdateService = (id: string, updates: Partial<Service>) => {
+  const handleUpdateService = (id: string, updates: Partial<Service>): void => {
     setServices((prev) => prev.map((s) => (s.id === id ? { ...s, ...updates } : s)))
   }
 
-  const handleToggleStatus = async (id: string) => {
+  const handleDeleteService = async (id: string): Promise<void> => {
+    const service = services.find((s) => s.id === id)
+    if (!service) return
+
+    // 1. 检查是否正在运行
+    if (service.status === 'running') {
+      // 二次确认
+      const confirmed = window.confirm(
+        `服务 "${service.name}" 正在运行中。\n\n确定要停止并删除它吗？`
+      )
+
+      if (!confirmed) return // 用户取消
+
+      // 先停止服务
+      await window.api.stopService(id)
+    } else {
+      // 可选：即使没运行，为了防止手滑，也可以加个普通确认
+      if (!window.confirm(`确定要删除 "${service.name}" 吗？`)) return
+    }
+
+    // 2. 从列表中移除 (state更新会触发 useEffect 自动保存到 electron-store)
+    const newServices = services.filter((s) => s.id !== id)
+    setServices(newServices)
+
+    // 3. 如果删除的是当前选中的服务，需要切换选中项
+    if (activeId === id) {
+      setActiveId(newServices.length > 0 ? newServices[0].id : null)
+    }
+  }
+
+  const handleToggleStatus = async (id: string): Promise<void> => {
     const service = services.find((s) => s.id === id)
     if (!service) return
 
@@ -133,6 +163,7 @@ function App(): React.JSX.Element {
         onSelect={setActiveId}
         onAdd={handleAddService}
         onToggleStatus={handleToggleStatus}
+        onDelete={handleDeleteService} // 👈 别忘了把函数传给 Sidebar
       />
 
       <div className="flex-1 flex flex-col h-full bg-[#0d1117]">
