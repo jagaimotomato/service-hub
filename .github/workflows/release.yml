@@ -14,7 +14,7 @@ jobs:
       matrix:
         # 如果你想同时打 Win 和 Mac 包，可以写 [macos-latest, windows-latest]
         # 注意：Mac 构建通常需要签名，否则安装会报错，建议先只试 windows-latest
-        os: [macos-latest, windows-latest]
+        os: [macos-latest, windows-2019]
 
     steps:
       - name: Check out Git repository
