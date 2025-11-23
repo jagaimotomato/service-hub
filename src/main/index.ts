@@ -4,14 +4,24 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { spawn, ChildProcess } from 'child_process'
 import kill from 'tree-kill'
-import Store from 'electron-store' // 导入存储库
-import fixPath from 'fix-path' // 引入库
+import Store from 'electron-store'
+import fixPath from 'fix-path'
 
-fixPath()
+// === 修复 fixPath 兼容性问题 ===
+// fix-path 新版可能是 ESM，导入后可能在 .default 属性上，也可能直接就是函数
+try {
+  if (typeof fixPath === 'function') {
+    fixPath()
+  } else if (fixPath && typeof (fixPath as any).default === 'function') {
+    ;(fixPath as any).default()
+  }
+} catch (e) {
+  console.error('Failed to run fix-path:', e)
+}
 
 // 初始化 Store
-// schema 定义数据的类型，保证数据安全
 const store = new Store({
+  // @ts-ignore
   schema: {
     services: {
       type: 'array',
@@ -21,8 +31,6 @@ const store = new Store({
 })
 
 let mainWindow: BrowserWindow | null = null
-
-// 进程池：用来管理运行中的服务
 const processMap = new Map<string, ChildProcess>()
 
 function createWindow(): void {
@@ -31,7 +39,7 @@ function createWindow(): void {
     height: 720,
     show: false,
     autoHideMenuBar: true,
-    backgroundColor: '#0d1117', // 与暗色主题匹配
+    backgroundColor: '#0d1117',
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -63,7 +71,9 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // IPC: 获取服务列表
+  // --- IPC Handlers ---
+
+  // 1. 启动服务
   ipcMain.handle('service:start', (event, id: string, cwd: string, commandStr: string) => {
     const window = BrowserWindow.fromWebContents(event.sender)
     if (processMap.has(id)) return false
@@ -75,9 +85,9 @@ app.whenReady().then(() => {
       const child = spawn(cmd, args, {
         cwd,
         shell: true,
-        // 解决 Mac/Linux GUI 环境变量缺失的关键：
         env: {
           ...process.env,
+          // 确保基础 PATH 存在，防止 fixPath 失败时完全无法运行
           PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
           FORCE_COLOR: '1'
         }
@@ -90,33 +100,32 @@ app.whenReady().then(() => {
         window.webContents.send(`log:${id}`, data.toString())
       }
 
-      // 1. 监听标准输出
+      // 监听输出
       child.stdout?.on('data', sendLog)
       child.stderr?.on('data', sendLog)
 
-      // 2.【新增】监听启动错误 (比如 spawn 直接失败)
+      // 监听启动错误
       child.on('error', (err) => {
         console.error(`[Error] ID:${id}`, err)
         sendLog(`\x1b[31m[System Error] Failed to spawn process: ${err.message}\x1b[0m\r\n`)
         processMap.delete(id)
         if (window && !window.isDestroyed()) {
-          window.webContents.send(`exit:${id}`) // 通知前端已退出
+          window.webContents.send(`exit:${id}`)
         }
       })
 
-      // 3. 监听退出
+      // 监听退出
       child.on('close', (code) => {
         console.log(`[Exit] ID:${id} Code:${code}`)
         processMap.delete(id)
         if (window && !window.isDestroyed()) {
-          window.webContents.send(`exit:${id}`) // 通知前端已退出
+          window.webContents.send(`exit:${id}`)
         }
       })
 
       return true
     } catch (error: unknown) {
       console.error(error)
-      // 如果同步代码报错，直接发日志给前端
       if (window && !window.isDestroyed()) {
         window.webContents.send(
           `log:${id}`,
@@ -127,12 +136,10 @@ app.whenReady().then(() => {
     }
   })
 
-  // 停止服务 (健壮性修复)
+  // 2. 停止服务
   ipcMain.handle('service:stop', (_event, id: string) => {
     const child = processMap.get(id)
 
-    // 【关键修复】如果 map 里找不到这个 id，说明进程早就挂了
-    // 这时候直接返回 true，让前端把状态改成 stopped
     if (!child) {
       console.log(`[Stop] Process ${id} not found, assuming stopped.`)
       return true
@@ -141,10 +148,7 @@ app.whenReady().then(() => {
     if (child.pid) {
       try {
         kill(child.pid, 'SIGKILL', (err) => {
-          if (err) {
-            console.error('[Stop] Kill failed (maybe already dead):', err)
-            // 杀进程失败通常是因为它已经不在了，也可以视为成功
-          }
+          if (err) console.error('[Stop] Kill failed (maybe already dead):', err)
           processMap.delete(id)
         })
       } catch (e) {
@@ -154,23 +158,21 @@ app.whenReady().then(() => {
     } else {
       processMap.delete(id)
     }
-
-    return true // 总是返回成功
+    return true
   })
+
+  // 3. 获取列表
   ipcMain.handle('service:list', () => {
-    // 从本地存储读取
-    const services = store.get('services', [])
-    return services
+    return store.get('services', [])
   })
 
-  // IPC: 保存服务列表
+  // 4. 保存列表
   ipcMain.handle('service:save', (_event, services) => {
-    // 保存到本地存储
     store.set('services', services)
     return true
   })
 
-  // IPC: 选择文件夹
+  // 5. 选择文件夹
   ipcMain.handle('dialog:openDirectory', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
       properties: ['openDirectory']
@@ -178,6 +180,7 @@ app.whenReady().then(() => {
     if (canceled) return undefined
     return filePaths[0]
   })
+
   createWindow()
 
   app.on('activate', function () {
@@ -185,7 +188,6 @@ app.whenReady().then(() => {
   })
 })
 
-// 退出前杀掉所有子进程
 app.on('before-quit', () => {
   processMap.forEach((child) => {
     if (child.pid) kill(child.pid)
