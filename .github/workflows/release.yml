@@ -1,0 +1,42 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*' # 当你推送 v1.0.0 这样的 tag 时触发
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        # 如果你想同时打 Win 和 Mac 包，可以写 [macos-latest, windows-latest]
+        # 注意：Mac 构建通常需要签名，否则安装会报错，建议先只试 windows-latest
+        os: [macos-latest, windows-latest]
+
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+
+      - name: Install Dependencies
+        run: pnpm install
+
+      - name: Build Electron App
+        # 这里会自动读取 package.json 的 build 配置
+        # GH_TOKEN 是 GitHub 自带的，不需要你手动设置
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pnpm run build
+          pnpm exec electron-builder --publish always
