@@ -94,13 +94,16 @@
       "gatekeeperAssess": false
     },
     "linux": {
-      "target": [
-        "AppImage"
-      ],
       "icon": "resources/icon.png",
-      "arch": [
-        "x64",
-        "arm64"
+      "category": "Development",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ]
     }
   }
