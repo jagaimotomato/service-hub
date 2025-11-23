@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import Sidebar from './components/Sidebar'
 import ServiceDetail from './components/ServiceDetail'
 import { Service } from './types'
@@ -72,7 +72,7 @@ function App(): React.JSX.Element {
 
   // --- Actions ---
 
-  const handleAddService = () => {
+  const handleAddService = (): void => {
     const newService: Service = {
       id: uuidv4(),
       name: 'New Service',

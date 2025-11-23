@@ -28,7 +28,7 @@ const api = {
   onLog: (id: string, callback: (data: string) => void) => {
     const channel = `log:${id}`
     // 3. Use IpcRendererEvent for the event object
-    const listener = (_event: IpcRendererEvent, data: string) => callback(data)
+    const listener = (_event: IpcRendererEvent, data: string): void => callback(data)
     ipcRenderer.on(channel, listener)
     return () => ipcRenderer.removeListener(channel, listener)
   },
@@ -36,7 +36,7 @@ const api = {
     const channel = `exit:${id}`
     // No arguments are used here, so this one is safe, but technically
     // the listener receives (_event: IpcRendererEvent) if you needed it.
-    const listener = () => callback()
+    const listener = (): void => callback()
     ipcRenderer.on(channel, listener)
     return () => ipcRenderer.removeListener(channel, listener)
   }
