@@ -1,73 +1,124 @@
 import React, { useEffect, useRef } from 'react'
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
+import { WebLinksAddon } from 'xterm-addon-web-links'
 
 interface TerminalViewProps {
-  id: string // 不同的服务对应不同的终端实例
+  id: string
+  cwd: string
 }
 
-// 全局缓存终端实例，防止切换服务时终端内容丢失
-// key: serviceId, value: { terminal, fitAddon }
+// 缓存终端实例
 const terminalCache = new Map<string, { term: Terminal; fit: FitAddon }>()
 
-const TerminalView: React.FC<TerminalViewProps> = ({ id }) => {
+const TerminalView: React.FC<TerminalViewProps> = ({ id, cwd }) => {
   const containerRef = useRef<HTMLDivElement>(null)
+  // 用 ref 记录当前 ID，防止 useEffect 闭包陷阱
+  const currentId = useRef(id)
 
   useEffect(() => {
+    currentId.current = id
     if (!containerRef.current) return
 
     let termObj = terminalCache.get(id)
 
-    const removeLogListener = window.api.onLog(id, (data) => {
-      // 将换行符标准化，确保 xterm 正确换行
-      const formatted = data.replace(/\n/g, '\r\n')
-      termObj?.term.write(formatted)
-    })
-
+    // 1. 如果缓存不存在，创建新终端
     if (!termObj) {
-      // 1. 如果缓存里没有，创建一个新的终端实例
       const term = new Terminal({
         theme: {
-          background: '#0d1117', // 与背景融合的深色
+          background: '#0d1117',
           foreground: '#c9d1d9',
-          cursor: '#58a6ff'
+          cursor: '#58a6ff',
+          selectionBackground: '#58a6ff33'
         },
-        fontSize: 12,
+        fontSize: 13,
         fontFamily: 'Menlo, Monaco, "Courier New", monospace',
         cursorBlink: true,
-        convertEol: true // 自动处理换行符
+        allowProposedApi: true
       })
 
       const fit = new FitAddon()
       term.loadAddon(fit)
+      term.loadAddon(new WebLinksAddon())
 
       termObj = { term, fit }
       terminalCache.set(id, termObj)
 
-      // 写入一点欢迎语，假装已经连接
-      term.write(`\x1b[32m➜\x1b[0m Service Terminal initialized for ID: ${id}\r\n`)
-      term.write(`\x1b[90m Waiting for commands...\x1b[0m\r\n`)
+      // 监听尺寸变化 -> 后端
+      term.onResize((size) => {
+        window.api.resizeTerminal(id, size.cols, size.rows)
+      })
+
+      // 监听输入 -> 后端
+      term.onData((data) => {
+        window.api.writeTerminal(id, data)
+      })
     }
 
-    // 2. 将终端挂载到 DOM
-    termObj.term.open(containerRef.current)
-    termObj.fit.fit()
+    // 2. 挂载到 DOM
+    // ⚠️ 关键：先清空，防止 React 严格模式导致双重挂载
+    if (containerRef.current) {
+      containerRef.current.innerHTML = ''
+    }
 
-    // 3. 监听窗口大小变化，自动调整终端大小
-    const handleResize = () => termObj?.fit.fit()
+    termObj.term.open(containerRef.current)
+
+    // 3. 布局调整与聚焦
+    setTimeout(() => {
+      termObj?.fit.fit()
+      termObj?.term.focus() // 🔥 核心修复：挂载后立即聚焦
+    }, 50)
+
+    // 4. 监听后端日志
+    const removeLogListener = window.api.onLog(id, (data) => {
+      // 只有当前显示的 ID 才写入数据，防止后台 Tab 串台（虽然 React 卸载组件不应该发生）
+      if (currentId.current === id) {
+        termObj?.term.write(data)
+      }
+    })
+
+    // 5. 初始化后端 Shell (如果还没启动)
+    // 延迟一点点，确保前端就绪
+    setTimeout(() => {
+      window.api.initTerminal(id, cwd)
+    }, 100)
+
+    const handleResize = (): void => termObj?.fit.fit()
     window.addEventListener('resize', handleResize)
 
     return () => {
       removeLogListener()
+      // 注意：不要 dispose terminal，只移除窗口 resize 监听
       window.removeEventListener('resize', handleResize)
-      // 注意：这里我们不 dispose 终端，而是让它留在缓存里，
-      // 这样用户切回来时，之前的日志还在！
-      // 只有在删除服务时才需要真正清理缓存（后续实现）。
-      // 这里只需要把 DOM 拆下来即可，xterm 会自动处理 open 的 detach。
     }
   }, [id])
 
-  return <div className="w-full h-full" ref={containerRef} />
+  // 6. 监听 cwd 变化自动跳转 (可选)
+  useEffect(() => {
+    if (cwd && cwd.trim() !== '') {
+      // 只有当终端已经存在时才发 cd
+      if (terminalCache.has(id)) {
+        window.api.writeTerminal(id, `cd "${cwd}"\r`)
+        // cd 后也聚焦一下
+        setTimeout(() => terminalCache.get(id)?.term.focus(), 100)
+      }
+    }
+  }, [cwd, id])
+
+  // 🔥 核心修复：点击区域强制聚焦
+  // 解决点击按钮后焦点丢失的问题
+  const handleContainerClick = (): void => {
+    const termObj = terminalCache.get(id)
+    termObj?.term.focus()
+  }
+
+  return (
+    <div
+      className="w-full h-full"
+      ref={containerRef}
+      onClick={handleContainerClick} // 点击即聚焦
+    />
+  )
 }
 
 export default TerminalView

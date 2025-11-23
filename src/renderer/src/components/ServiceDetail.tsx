@@ -102,7 +102,7 @@ const ServiceDetail: React.FC<ServiceDetailProps> = ({ service, onUpdate }) => {
 
         {/* 终端容器 (去掉 padding，让 xterm 贴边显示更像专业终端) */}
         <div className="flex-1 relative">
-          <TerminalView id={service.id} />
+          <TerminalView id={service.id} cwd={service.cwd} />
         </div>
       </div>
     </div>

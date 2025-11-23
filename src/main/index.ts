@@ -1,43 +1,43 @@
-import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
-import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import { electronApp, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
-import { spawn, ChildProcess } from 'child_process'
 import kill from 'tree-kill'
 import Store from 'electron-store'
 import fixPath from 'fix-path'
+import * as pty from 'node-pty'
+import os from 'os'
+import fs from 'fs' // 引入 fs
 
-// === 修复 fixPath 兼容性问题 ===
-// fix-path 新版可能是 ESM，导入后可能在 .default 属性上，也可能直接就是函数
+// 修复环境变量
 try {
   if (typeof fixPath === 'function') {
     fixPath()
-  } else if (fixPath && typeof (fixPath as any).default === 'function') {
-    ;(fixPath as any).default()
+  } else if (
+    fixPath &&
+    typeof (fixPath as unknown as { default: () => void }).default === 'function'
+  ) {
+    ;(fixPath as unknown as { default: () => void }).default()
   }
 } catch (e) {
   console.error('Failed to run fix-path:', e)
 }
 
-// 初始化 Store
 const store = new Store({
-  // @ts-ignore
+  // @ts-ignore fix-path 的类型定义不完整，所以需要忽略
   schema: {
-    services: {
-      type: 'array',
-      default: []
-    }
+    services: { type: 'array', default: [] }
   }
 })
 
 let mainWindow: BrowserWindow | null = null
-const processMap = new Map<string, ChildProcess>()
+const processMap = new Map<string, pty.IPty>()
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1000,
     height: 720,
-    show: false,
+    show: true,
     autoHideMenuBar: true,
     backgroundColor: '#0d1117',
     ...(process.platform === 'linux' ? { icon } : {}),
@@ -47,15 +47,6 @@ function createWindow(): void {
     }
   })
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow?.show()
-  })
-
-  mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
-    return { action: 'deny' }
-  })
-
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
@@ -63,139 +54,130 @@ function createWindow(): void {
   }
 }
 
-// === APP 生命周期 ===
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.electron')
 
-  app.on('browser-window-created', (_, window) => {
-    optimizer.watchWindowShortcuts(window)
-  })
+  // --- 核心逻辑：终端管理器 ---
 
-  // --- IPC Handlers ---
-
-  // 1. 启动服务
-  ipcMain.handle('service:start', (event, id: string, cwd: string, commandStr: string) => {
+  // 1. 初始化终端 (只启动 Shell，不跑命令)
+  ipcMain.handle('terminal:init', (event, id: string, cwd: string) => {
     const window = BrowserWindow.fromWebContents(event.sender)
-    if (processMap.has(id)) return false
+
+    // 如果已经存在，就不重复创建，直接忽略
+    if (processMap.has(id)) return true
 
     try {
-      console.log(`[Start] ID:${id} Dir:${cwd} Cmd:${commandStr}`)
-      const [cmd, ...args] = commandStr.split(' ')
+      // 1. 确定 Shell (Mac/Linux用默认Shell，Windows用PowerShell)
+      const shell = os.platform() === 'win32' ? 'powershell.exe' : process.env.SHELL || '/bin/bash'
 
-      const child = spawn(cmd, args, {
-        cwd,
-        shell: true,
-        env: {
-          ...process.env,
-          // 确保基础 PATH 存在，防止 fixPath 失败时完全无法运行
-          PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
-          FORCE_COLOR: '1'
-        }
-      })
-
-      processMap.set(id, child)
-
-      const sendLog = (data: Buffer | string): void => {
-        if (!window || window.isDestroyed()) return
-        window.webContents.send(`log:${id}`, data.toString())
+      // 🛡️ 防御性编程：检查目录是否存在，不存在则回退到 Home
+      let targetDir = cwd && cwd.trim() !== '' ? cwd : os.homedir()
+      if (targetDir && !fs.existsSync(targetDir)) {
+        console.warn(`[Init Shell] Path not found: ${targetDir}, falling back to home.`)
+        targetDir = os.homedir()
       }
 
-      // 监听输出
-      child.stdout?.on('data', sendLog)
-      child.stderr?.on('data', sendLog)
+      console.log(`[Init Shell] ID:${id} Shell:${shell} Dir:${targetDir}`)
 
-      // 监听启动错误
-      child.on('error', (err) => {
-        console.error(`[Error] ID:${id}`, err)
-        sendLog(`\x1b[31m[System Error] Failed to spawn process: ${err.message}\x1b[0m\r\n`)
-        processMap.delete(id)
-        if (window && !window.isDestroyed()) {
-          window.webContents.send(`exit:${id}`)
-        }
+      const ptyProcess = pty.spawn(shell, [], {
+        name: 'xterm-256color',
+        cols: 80,
+        rows: 24,
+        cwd: targetDir,
+        env: process.env as unknown as Record<string, string>
       })
 
-      // 监听退出
-      child.on('close', (code) => {
-        console.log(`[Exit] ID:${id} Code:${code}`)
+      processMap.set(id, ptyProcess)
+
+      // 3. 数据流回传
+      ptyProcess.onData((data) => {
+        if (!window || window.isDestroyed()) return
+        window.webContents.send(`log:${id}`, data)
+      })
+
+      ptyProcess.onExit(({ exitCode }) => {
         processMap.delete(id)
         if (window && !window.isDestroyed()) {
           window.webContents.send(`exit:${id}`)
+          // 提示用户 Shell 已关闭
+          window.webContents.send(
+            `log:${id}`,
+            `\r\n\x1b[31mSession ended (Code ${exitCode}). Reload to restart.\x1b[0m\r\n`
+          )
         }
       })
 
       return true
     } catch (error: unknown) {
       console.error(error)
-      if (window && !window.isDestroyed()) {
-        window.webContents.send(
-          `log:${id}`,
-          `\x1b[31m[System Error] ${error instanceof Error ? error.message : String(error)}\x1b[0m\r\n`
-        )
-      }
       return false
     }
   })
 
-  // 2. 停止服务
-  ipcMain.handle('service:stop', (_event, id: string) => {
-    const child = processMap.get(id)
-
-    if (!child) {
-      console.log(`[Stop] Process ${id} not found, assuming stopped.`)
-      return true
-    }
-
-    if (child.pid) {
+  // 2. 写入数据 (核心交互接口：打字、执行命令都走这里)
+  ipcMain.on('terminal:write', (_event, id: string, data: string) => {
+    const ptyProcess = processMap.get(id)
+    if (ptyProcess) {
       try {
-        kill(child.pid, 'SIGKILL', (err) => {
-          if (err) console.error('[Stop] Kill failed (maybe already dead):', err)
-          processMap.delete(id)
-        })
+        ptyProcess.write(data)
       } catch (e) {
-        console.error('[Stop] Exception during kill:', e)
-        processMap.delete(id)
+        console.error(e)
       }
-    } else {
+    }
+  })
+
+  // 3. 调整大小
+  ipcMain.on('terminal:resize', (_event, id: string, cols: number, rows: number) => {
+    const ptyProcess = processMap.get(id)
+    if (ptyProcess) {
+      try {
+        ptyProcess.resize(cols, rows)
+      } catch (e: unknown | Error) {
+        console.error(`Failed to resize service ${id}:`, e)
+      }
+    }
+  })
+
+  // 4. 彻底销毁 (删除服务时用)
+  ipcMain.handle('terminal:kill', (_event, id: string) => {
+    const ptyProcess = processMap.get(id)
+    if (ptyProcess) {
+      try {
+        ptyProcess.kill()
+        if (ptyProcess.pid) kill(ptyProcess.pid, 'SIGKILL')
+      } catch (e: unknown | Error) {
+        console.error(`Failed to kill service ${id}:`, e)
+      }
       processMap.delete(id)
     }
     return true
   })
 
-  // 3. 获取列表
-  ipcMain.handle('service:list', () => {
-    return store.get('services', [])
-  })
-
-  // 4. 保存列表
-  ipcMain.handle('service:save', (_event, services) => {
-    store.set('services', services)
-    return true
-  })
-
-  // 5. 选择文件夹
+  // --- 通用接口 ---
+  ipcMain.handle('service:list', () => store.get('services', []))
+  ipcMain.handle('service:save', (_event, services) => store.set('services', services))
   ipcMain.handle('dialog:openDirectory', async () => {
-    const { canceled, filePaths } = await dialog.showOpenDialog({
-      properties: ['openDirectory']
-    })
-    if (canceled) return undefined
-    return filePaths[0]
+    const { canceled, filePaths } = await dialog.showOpenDialog({ properties: ['openDirectory'] })
+    return canceled ? undefined : filePaths[0]
   })
 
   createWindow()
-
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
 
 app.on('before-quit', () => {
-  processMap.forEach((child) => {
-    if (child.pid) kill(child.pid)
+  processMap.forEach((proc) => {
+    try {
+      proc.kill()
+      if (proc.pid) kill(proc.pid)
+    } catch (e: unknown | Error) {
+      console.error('[Before Quit Error]', e)
+    }
   })
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+  if (process.platform !== 'darwin') app.quit()
 })
