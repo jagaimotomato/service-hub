@@ -1,28 +1,41 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
-const api = {
-  // 数据存取
-  getServices: () => ipcRenderer.invoke('service:list'),
-  saveServices: (services: any[]) => ipcRenderer.invoke('service:save', services),
+// 1. Define a minimal interface for the Service to replace 'any'
+interface Service {
+  id: string
+  name: string
+  cwd: string
+  command: string
+  status: string
+}
 
-  // 系统交互
+const api = {
+  // Data access
+  getServices: () => ipcRenderer.invoke('service:list'),
+  // 2. Use the Service[] type here
+  saveServices: (services: Service[]) => ipcRenderer.invoke('service:save', services),
+
+  // System interaction
   selectDirectory: () => ipcRenderer.invoke('dialog:openDirectory'),
 
-  // 服务控制
+  // Service control
   startService: (id: string, cwd: string, command: string) =>
     ipcRenderer.invoke('service:start', id, cwd, command),
   stopService: (id: string) => ipcRenderer.invoke('service:stop', id),
 
-  // 事件监听
+  // Event listeners
   onLog: (id: string, callback: (data: string) => void) => {
     const channel = `log:${id}`
-    const listener = (_event: any, data: string) => callback(data)
+    // 3. Use IpcRendererEvent for the event object
+    const listener = (_event: IpcRendererEvent, data: string) => callback(data)
     ipcRenderer.on(channel, listener)
     return () => ipcRenderer.removeListener(channel, listener)
   },
   onExit: (id: string, callback: () => void) => {
     const channel = `exit:${id}`
+    // No arguments are used here, so this one is safe, but technically
+    // the listener receives (_event: IpcRendererEvent) if you needed it.
     const listener = () => callback()
     ipcRenderer.on(channel, listener)
     return () => ipcRenderer.removeListener(channel, listener)
@@ -37,8 +50,8 @@ if (process.contextIsolated) {
     console.error(error)
   }
 } else {
-  // @ts-ignore
+  // @ts-ignore (define in dts)
   window.electron = electronAPI
-  // @ts-ignore
+  // @ts-ignore (define in dts)
   window.api = api
 }

@@ -15,12 +15,14 @@ function App(): React.JSX.Element {
       try {
         const savedServices = await window.api.getServices()
         if (Array.isArray(savedServices)) {
-          // 重要：每次重启APP，所有服务状态必须重置为 stopped
-          const resetServices = savedServices.map((s: Service) => ({
+          // Fix: Explicitly type the array as Service[] to prevent 'string' inference
+          const resetServices: Service[] = savedServices.map((s: Service) => ({
             ...s,
             status: 'stopped'
           }))
+
           setServices(resetServices)
+
           if (resetServices.length > 0) {
             setActiveId(resetServices[0].id)
           }
@@ -44,19 +46,29 @@ function App(): React.JSX.Element {
 
   // 3. 全局监听服务意外退出
   useEffect(() => {
-    const unsubs: (() => void)[] = []
-    services.forEach((s) => {
-      if (s.status === 'running') {
-        const unsub = window.api.onExit(s.id, () => {
-          setServices((prev) =>
-            prev.map((item) => (item.id === s.id ? { ...item, status: 'stopped' } : item))
-          )
-        })
-        unsubs.push(unsub)
+    ;(async () => {
+      try {
+        const savedServices = await window.api.getServices()
+        if (Array.isArray(savedServices)) {
+          // 🛠️ 修改这里：显式指定类型 : Service[]
+          const resetServices: Service[] = savedServices.map((s: Service) => ({
+            ...s,
+            status: 'stopped' // TS 现在知道这必须符合 Service 类型
+          }))
+
+          setServices(resetServices)
+
+          if (resetServices.length > 0) {
+            setActiveId(resetServices[0].id)
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load services:', err)
+      } finally {
+        setLoaded(true)
       }
-    })
-    return () => unsubs.forEach((fn) => fn())
-  }, [services])
+    })()
+  }, [])
 
   // --- Actions ---
 
