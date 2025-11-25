@@ -1,6 +1,5 @@
 import React from 'react'
-// 👇 1. 引入 Trash2 图标
-import { Play, Square, Plus, TerminalSquare, Box, Trash2 } from 'lucide-react'
+import { Play, Square, Plus, TerminalSquare, Box, Trash2, RotateCcw } from 'lucide-react'
 import { Service } from '../types'
 
 interface SidebarProps {
@@ -9,22 +8,23 @@ interface SidebarProps {
   onSelect: (id: string) => void
   onAdd: () => void
   onToggleStatus: (id: string) => void
-  // 👇 2. 新增 props 定义
   onDelete: (id: string) => void
+  // 🆕 新增重启回调
+  onRestart: (id: string) => void
 }
 
-// 👇 3. 记得解构 onDelete
 const Sidebar: React.FC<SidebarProps> = ({
   services,
   activeId,
   onSelect,
   onAdd,
   onToggleStatus,
-  onDelete
+  onDelete,
+  onRestart
 }) => {
   return (
     <div className="w-64 h-full bg-[#161b22] flex flex-col border-r border-[#30363d]">
-      {/* 顶部标题栏 (保持不变) */}
+      {/* 顶部标题栏 */}
       <div className="h-12 flex items-center justify-between px-4 border-b border-[#30363d] select-none draggable-region">
         <div className="flex items-center gap-2 font-semibold text-gray-200">
           <TerminalSquare className="w-5 h-5 text-blue-400" />
@@ -78,7 +78,7 @@ const Sidebar: React.FC<SidebarProps> = ({
 
               {/* 右侧：操作按钮组 (Flex布局) */}
               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                {/* 启停按钮 */}
+                {/* 1. 启停按钮 */}
                 <button
                   onClick={(e) => {
                     e.stopPropagation()
@@ -97,10 +97,24 @@ const Sidebar: React.FC<SidebarProps> = ({
                   )}
                 </button>
 
-                {/* 👇 4. 新增：删除按钮 */}
+                {/* 2. 🆕 重启按钮 (仅运行时显示或可用) */}
+                {isRunning && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onRestart(service.id)
+                    }}
+                    className="p-1.5 rounded hover:bg-blue-500/20 text-gray-500 hover:text-blue-400 transition-colors"
+                    title="Restart"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                  </button>
+                )}
+
+                {/* 3. 删除按钮 */}
                 <button
                   onClick={(e) => {
-                    e.stopPropagation() // 防止触发选中
+                    e.stopPropagation()
                     onDelete(service.id)
                   }}
                   className="p-1.5 rounded hover:bg-red-500/20 text-gray-500 hover:text-red-400 transition-colors"
@@ -114,7 +128,7 @@ const Sidebar: React.FC<SidebarProps> = ({
         })}
       </div>
 
-      {/* 底部信息 (保持不变) */}
+      {/* 底部信息 */}
       <div className="px-4 py-2 text-xs text-gray-500 border-t border-[#30363d] flex items-center gap-2 select-none">
         <Box className="w-3 h-3" />
         <span>{services.length} Services stored</span>

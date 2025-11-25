@@ -1,13 +1,13 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage } from 'electron'
 import { join } from 'path'
 import { electronApp, is } from '@electron-toolkit/utils'
-import icon from '../../resources/icon.png?asset'
+import icon from '../../resources/icon.png?asset' // 这是构建工具处理过的图标路径
 import kill from 'tree-kill'
 import Store from 'electron-store'
 import fixPath from 'fix-path'
 import * as pty from 'node-pty'
 import os from 'os'
-import fs from 'fs' // 引入 fs
+import fs from 'fs'
 
 // 修复环境变量
 try {
@@ -31,19 +31,33 @@ const store = new Store({
 })
 
 let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null
+let isQuitting = false // 标记是否正在进行真正的退出流程
+
 const processMap = new Map<string, pty.IPty>()
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1000,
     height: 720,
-    show: true,
+    show: false,
     autoHideMenuBar: true,
     backgroundColor: '#0d1117',
     ...(process.platform === 'linux' ? { icon } : {}),
+    // Windows 这里的 icon 设置只影响左上角和任务栏，不影响 Tray
+    icon: icon,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
+    }
+  })
+
+  // ⚡️ 核心：拦截关闭事件，改为隐藏到托盘
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault()
+      mainWindow?.hide()
+      return false
     }
   })
 
@@ -52,28 +66,57 @@ function createWindow(): void {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+
+  mainWindow.on('ready-to-show', () => {
+    mainWindow?.show()
+  })
+
+  mainWindow.webContents.setWindowOpenHandler((details) => {
+    shell.openExternal(details.url)
+    return { action: 'deny' }
+  })
 }
 
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.electron')
 
-  // --- 核心逻辑：终端管理器 ---
+  // --- 1. 创建系统托盘 (Tray) ---
+  const trayIcon = nativeImage.createFromPath(icon) // 使用引入的图标路径
+  tray = new Tray(trayIcon)
 
-  // 1. 初始化终端 (只启动 Shell，不跑命令)
+  const contextMenu = Menu.buildFromTemplate([
+    { label: 'Open ServiceHub', click: () => mainWindow?.show() },
+    { type: 'separator' },
+    {
+      label: 'Quit',
+      click: () => {
+        isQuitting = true // 标记为真退出
+        app.quit()
+      }
+    }
+  ])
+
+  tray.setToolTip('ServiceHub')
+  tray.setContextMenu(contextMenu)
+
+  // 双击托盘图标打开窗口
+  tray.on('double-click', () => {
+    mainWindow?.show()
+  })
+
+  // --- End Tray ---
+
+  // --- 终端管理器逻辑 ---
+
   ipcMain.handle('terminal:init', (event, id: string, cwd: string) => {
     const window = BrowserWindow.fromWebContents(event.sender)
-
-    // 如果已经存在，就不重复创建，直接忽略
     if (processMap.has(id)) return true
 
     try {
-      // 1. 确定 Shell (Mac/Linux用默认Shell，Windows用PowerShell)
       const shell = os.platform() === 'win32' ? 'powershell.exe' : process.env.SHELL || '/bin/bash'
-
-      // 🛡️ 防御性编程：检查目录是否存在，不存在则回退到 Home
       let targetDir = cwd && cwd.trim() !== '' ? cwd : os.homedir()
-      if (targetDir && !fs.existsSync(targetDir)) {
-        console.warn(`[Init Shell] Path not found: ${targetDir}, falling back to home.`)
+
+      if (!fs.existsSync(targetDir)) {
         targetDir = os.homedir()
       }
 
@@ -89,7 +132,6 @@ app.whenReady().then(() => {
 
       processMap.set(id, ptyProcess)
 
-      // 3. 数据流回传
       ptyProcess.onData((data) => {
         if (!window || window.isDestroyed()) return
         window.webContents.send(`log:${id}`, data)
@@ -99,10 +141,9 @@ app.whenReady().then(() => {
         processMap.delete(id)
         if (window && !window.isDestroyed()) {
           window.webContents.send(`exit:${id}`)
-          // 提示用户 Shell 已关闭
           window.webContents.send(
             `log:${id}`,
-            `\r\n\x1b[31mSession ended (Code ${exitCode}). Reload to restart.\x1b[0m\r\n`
+            `\r\n\x1b[31mSession ended (Code ${exitCode}).\x1b[0m\r\n`
           )
         }
       })
@@ -114,7 +155,6 @@ app.whenReady().then(() => {
     }
   })
 
-  // 2. 写入数据 (核心交互接口：打字、执行命令都走这里)
   ipcMain.on('terminal:write', (_event, id: string, data: string) => {
     const ptyProcess = processMap.get(id)
     if (ptyProcess) {
@@ -126,7 +166,6 @@ app.whenReady().then(() => {
     }
   })
 
-  // 3. 调整大小
   ipcMain.on('terminal:resize', (_event, id: string, cols: number, rows: number) => {
     const ptyProcess = processMap.get(id)
     if (ptyProcess) {
@@ -138,7 +177,6 @@ app.whenReady().then(() => {
     }
   })
 
-  // 4. 彻底销毁 (删除服务时用)
   ipcMain.handle('terminal:kill', (_event, id: string) => {
     const ptyProcess = processMap.get(id)
     if (ptyProcess) {
@@ -153,7 +191,6 @@ app.whenReady().then(() => {
     return true
   })
 
-  // --- 通用接口 ---
   ipcMain.handle('service:list', () => store.get('services', []))
   ipcMain.handle('service:save', (_event, services) => store.set('services', services))
   ipcMain.handle('dialog:openDirectory', async () => {
@@ -162,12 +199,14 @@ app.whenReady().then(() => {
   })
 
   createWindow()
+
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
 
 app.on('before-quit', () => {
+  isQuitting = true // 确保 Cmd+Q 或其他退出方式能正常退出
   processMap.forEach((proc) => {
     try {
       proc.kill()
