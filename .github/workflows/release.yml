@@ -3,8 +3,12 @@ name: Build and Release
 on:
   push:
     tags:
-      - 'v*' # 当你推送 v1.0.0 这样的 tag 时触发
-  workflow_dispatch: # <--- 加上这一行！这意味着允许手动点击触发
+      - 'v*'
+  workflow_dispatch:
+
+# 🔒 关键修改 1：给予写权限，允许创建 Release 和上传文件
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -12,8 +16,7 @@ jobs:
 
     strategy:
       matrix:
-        # 如果你想同时打 Win 和 Mac 包，可以写 [macos-latest, windows-latest]
-        # 注意：Mac 构建通常需要签名，否则安装会报错，建议先只试 windows-latest
+        # 同时构建 Windows 和 macOS
         os: [macos-latest, windows-latest]
 
     steps:
@@ -23,7 +26,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11' # 强制使用 Python 3.11 (包含 distutils)
+          python-version: '3.11'
 
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -39,10 +42,21 @@ jobs:
         run: pnpm install
 
       - name: Build Electron App
-        # 这里会自动读取 package.json 的 build 配置
-        # GH_TOKEN 是 GitHub 自带的，不需要你手动设置
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           pnpm run build
           pnpm exec electron-builder --publish always
+
+      # 📦 关键修改 2：手动把 dist 目录下的文件保存下来
+      # 这样即使发布失败，你也能在 Actions 页面下载到安装包
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-build-artifacts
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip
+            dist/*.blockmap
+          if-no-files-found: warn
