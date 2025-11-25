@@ -1,6 +1,6 @@
 {
   "name": "service-hub",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Your local service manager",
   "main": "./out/main/index.js",
   "author": "jagaimotomato",
