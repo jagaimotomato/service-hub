@@ -57,7 +57,6 @@ function createWindow(): void {
     if (!isQuitting) {
       event.preventDefault()
       mainWindow?.hide()
-      return false
     }
   })
 
