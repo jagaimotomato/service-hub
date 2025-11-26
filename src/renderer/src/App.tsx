@@ -10,7 +10,6 @@ function App(): React.JSX.Element {
   const [loaded, setLoaded] = useState(false)
 
   // 🌍 判断当前是否为 Windows 系统
-  // Windows 的 UserAgent 通常包含 "Windows"
   const isWindows = window.navigator.userAgent.includes('Windows')
 
   // 1. 初始化：加载数据
@@ -40,14 +39,16 @@ function App(): React.JSX.Element {
     window.api.saveServices(services)
   }, [services, loaded])
 
-  // 3. 全局监听服务退出逻辑
+  // 3. 全局监听服务退出逻辑 (解决命令行退出 UI 不变的问题)
   useEffect(() => {
     const unsubs: (() => void)[] = []
 
     services.forEach((s) => {
+      // 只有当前标记为 running 的服务才需要监听 exit 信号
       if (s.status === 'running') {
         const unsub = window.api.onExit(s.id, () => {
           console.log(`[App] Service ${s.name} exited.`)
+          // 收到后端 Shell 退出信号，将状态置为 stopped
           setServices((prev) =>
             prev.map((item) => (item.id === s.id ? { ...item, status: 'stopped' } : item))
           )
@@ -96,7 +97,21 @@ function App(): React.JSX.Element {
 
     if (service.status === 'running') {
       // === 停止 ===
-      window.api.writeTerminal(id, '\u0003') // Ctrl+C
+      if (isWindows) {
+        // 🪟 Windows 特殊处理：
+        // 1. 先发送 Ctrl+C，给进程一点时间做清理 (graceful shutdown)
+        window.api.writeTerminal(id, '\u0003')
+
+        // 2. 稍等片刻，彻底销毁终端 Shell
+        // 只有销毁了 Shell，onExit 才会触发，状态灯才会变灰
+        setTimeout(async () => {
+          await window.api.killTerminal(id)
+        }, 200)
+      } else {
+        // 🍎 Mac/Linux：
+        // 因为使用了 'exec' 启动，Ctrl+C 会自动连带销毁 Shell，所以只需发信号
+        window.api.writeTerminal(id, '\u0003')
+      }
     } else {
       // === 启动 ===
       if (!service.command) {
@@ -104,10 +119,11 @@ function App(): React.JSX.Element {
         return
       }
 
+      // 每次启动前先复活/初始化终端
       await window.api.initTerminal(id, service.cwd)
 
       setTimeout(() => {
-        // 🛠️ 修复核心：Windows 不加 exec，Mac/Linux 加 exec
+        // Windows 不加 exec，Mac/Linux 加 exec 以支持 Ctrl+C 退出整个会话
         const prefix = isWindows ? '' : 'exec '
         const cmd = `${prefix}${service.command}`
 
@@ -123,20 +139,23 @@ function App(): React.JSX.Element {
     const service = services.find((s) => s.id === id)
     if (!service || service.status !== 'running') return
 
+    // 1. 强制销毁旧终端
     await window.api.killTerminal(id)
     setServices((prev) => prev.map((s) => (s.id === id ? { ...s, status: 'stopped' } : s)))
 
+    // 2. 稍等片刻，重新初始化并运行
     setTimeout(async () => {
+      // 重新初始化 Shell (带上 cwd)
       await window.api.initTerminal(id, service.cwd)
 
+      // 稍等 Shell 加载 prompt，然后发送命令
       setTimeout(() => {
         if (service.command) {
-          // 🛠️ 修复核心：重启逻辑也做同样的平台判断
           const prefix = isWindows ? '' : 'exec '
           const cmd = `${prefix}${service.command}`
-
           window.api.writeTerminal(id, `${cmd}\r`)
         }
+        // UI 变更为运行
         setServices((prev) => prev.map((s) => (s.id === id ? { ...s, status: 'running' } : s)))
       }, 800)
     }, 500)
