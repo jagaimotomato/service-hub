@@ -127,7 +127,7 @@ app.whenReady().then(() => {
         window.webContents.send(`log:${id}`, data)
       })
 
-      ptyProcess.onExit(({ exitCode, signal }) => {
+      ptyProcess.onExit(({ exitCode }) => {
         processMap.delete(id)
         if (window && !window.isDestroyed()) {
           window.webContents.send(`exit:${id}`)
@@ -175,7 +175,7 @@ app.whenReady().then(() => {
       // 1. 先尝试 Tree Kill (必须异步等待)
       if (pid) {
         await new Promise<void>((resolve) => {
-          kill(pid, 'SIGKILL', (err) => {
+          kill(pid, 'SIGKILL', () => {
             // 忽略错误，因为有时候进程可能已经结束
             resolve()
           })
