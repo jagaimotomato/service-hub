@@ -1,7 +1,7 @@
 import { app, shell, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage } from 'electron'
 import { join } from 'path'
 import { electronApp, is } from '@electron-toolkit/utils'
-import icon from '../../resources/icon.png?asset' // 这是构建工具处理过的图标路径
+import icon from '../../resources/icon.png?asset'
 import kill from 'tree-kill'
 import Store from 'electron-store'
 import fixPath from 'fix-path'
@@ -13,18 +13,15 @@ import fs from 'fs'
 try {
   if (typeof fixPath === 'function') {
     fixPath()
-  } else if (
-    fixPath &&
-    typeof (fixPath as unknown as { default: () => void }).default === 'function'
-  ) {
-    ;(fixPath as unknown as { default: () => void }).default()
+  } else if (fixPath && typeof (fixPath as any).default === 'function') {
+    ;(fixPath as any).default()
   }
 } catch (e) {
   console.error('Failed to run fix-path:', e)
 }
 
 const store = new Store({
-  // @ts-ignore fix-path 的类型定义不完整，所以需要忽略
+  // @ts-ignore 修复类型错误
   schema: {
     services: { type: 'array', default: [] }
   }
@@ -32,7 +29,7 @@ const store = new Store({
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
-let isQuitting = false // 标记是否正在进行真正的退出流程
+let isQuitting = false
 
 const processMap = new Map<string, pty.IPty>()
 
@@ -44,7 +41,6 @@ function createWindow(): void {
     autoHideMenuBar: true,
     backgroundColor: '#0d1117',
     ...(process.platform === 'linux' ? { icon } : {}),
-    // Windows 这里的 icon 设置只影响左上角和任务栏，不影响 Tray
     icon: icon,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -52,7 +48,6 @@ function createWindow(): void {
     }
   })
 
-  // ⚡️ 核心：拦截关闭事件，改为隐藏到托盘
   mainWindow.on('close', (event) => {
     if (!isQuitting) {
       event.preventDefault()
@@ -79,8 +74,7 @@ function createWindow(): void {
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.electron')
 
-  // --- 1. 创建系统托盘 (Tray) ---
-  const trayIcon = nativeImage.createFromPath(icon) // 使用引入的图标路径
+  const trayIcon = nativeImage.createFromPath(icon)
   tray = new Tray(trayIcon)
 
   const contextMenu = Menu.buildFromTemplate([
@@ -89,7 +83,7 @@ app.whenReady().then(() => {
     {
       label: 'Quit',
       click: () => {
-        isQuitting = true // 标记为真退出
+        isQuitting = true
         app.quit()
       }
     }
@@ -98,12 +92,9 @@ app.whenReady().then(() => {
   tray.setToolTip('ServiceHub')
   tray.setContextMenu(contextMenu)
 
-  // 双击托盘图标打开窗口
   tray.on('double-click', () => {
     mainWindow?.show()
   })
-
-  // --- End Tray ---
 
   // --- 终端管理器逻辑 ---
 
@@ -126,7 +117,7 @@ app.whenReady().then(() => {
         cols: 80,
         rows: 24,
         cwd: targetDir,
-        env: process.env as unknown as Record<string, string>
+        env: process.env as any
       })
 
       processMap.set(id, ptyProcess)
@@ -136,7 +127,7 @@ app.whenReady().then(() => {
         window.webContents.send(`log:${id}`, data)
       })
 
-      ptyProcess.onExit(({ exitCode }) => {
+      ptyProcess.onExit(({ exitCode, signal }) => {
         processMap.delete(id)
         if (window && !window.isDestroyed()) {
           window.webContents.send(`exit:${id}`)
@@ -170,21 +161,32 @@ app.whenReady().then(() => {
     if (ptyProcess) {
       try {
         ptyProcess.resize(cols, rows)
-      } catch (e: unknown | Error) {
-        console.error(`Failed to resize service ${id}:`, e)
-      }
+      } catch (e) {}
     }
   })
 
-  ipcMain.handle('terminal:kill', (_event, id: string) => {
+  // 🛠️ 核心修复：先杀全家 (tree-kill)，再清理外壳 (pty.kill)
+  // 这解决了 Windows 下 node.exe 残留的问题
+  ipcMain.handle('terminal:kill', async (_event, id: string) => {
     const ptyProcess = processMap.get(id)
     if (ptyProcess) {
+      const pid = ptyProcess.pid
+
+      // 1. 先尝试 Tree Kill (必须异步等待)
+      if (pid) {
+        await new Promise<void>((resolve) => {
+          kill(pid, 'SIGKILL', (err) => {
+            // 忽略错误，因为有时候进程可能已经结束
+            resolve()
+          })
+        })
+      }
+
+      // 2. 再杀掉 PTY 外壳
       try {
         ptyProcess.kill()
-        if (ptyProcess.pid) kill(ptyProcess.pid, 'SIGKILL')
-      } catch (e: unknown | Error) {
-        console.error(`Failed to kill service ${id}:`, e)
-      }
+      } catch (e) {}
+
       processMap.delete(id)
     }
     return true
@@ -204,16 +206,36 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('before-quit', () => {
-  isQuitting = true // 确保 Cmd+Q 或其他退出方式能正常退出
-  processMap.forEach((proc) => {
-    try {
-      proc.kill()
-      if (proc.pid) kill(proc.pid)
-    } catch (e: unknown | Error) {
-      console.error('[Before Quit Error]', e)
-    }
-  })
+// 🛠️ 退出逻辑重写：防止僵尸进程
+app.on('before-quit', (e) => {
+  // 允许正常退出的标记
+  isQuitting = true
+
+  // 如果还有运行中的进程，先阻止退出，执行异步清理
+  if (processMap.size > 0) {
+    e.preventDefault()
+
+    const killPromises = Array.from(processMap.values()).map((proc) => {
+      return new Promise<void>((resolve) => {
+        if (proc.pid) {
+          // 使用 tree-kill 强制杀死进程树 (node.exe 等子进程)
+          kill(proc.pid, 'SIGKILL', () => resolve())
+        } else {
+          resolve()
+        }
+        // 同时尝试杀死 shell
+        try {
+          proc.kill()
+        } catch (err) {}
+      })
+    })
+
+    // 等待所有清理完成后，再次调用 quit
+    Promise.all(killPromises).finally(() => {
+      processMap.clear()
+      app.quit()
+    })
+  }
 })
 
 app.on('window-all-closed', () => {

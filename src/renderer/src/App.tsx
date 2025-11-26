@@ -10,6 +10,7 @@ function App(): React.JSX.Element {
   const [loaded, setLoaded] = useState(false)
 
   // 🌍 判断当前是否为 Windows 系统
+  // 用于后续区分启动命令(exec)和停止逻辑(Ctrl+C vs Kill)
   const isWindows = window.navigator.userAgent.includes('Windows')
 
   // 1. 初始化：加载数据
@@ -39,7 +40,7 @@ function App(): React.JSX.Element {
     window.api.saveServices(services)
   }, [services, loaded])
 
-  // 3. 全局监听服务退出逻辑 (解决命令行退出 UI 不变的问题)
+  // 3. 全局监听服务退出逻辑 (主要用于 Mac/Linux 优雅退出后的状态更新)
   useEffect(() => {
     const unsubs: (() => void)[] = []
 
@@ -81,6 +82,7 @@ function App(): React.JSX.Element {
   const handleDeleteService = async (id: string): Promise<void> => {
     if (!window.confirm(`Are you sure you want to delete this service?`)) return
 
+    // 删除前强制销毁终端
     await window.api.killTerminal(id)
 
     const newServices = services.filter((s) => s.id !== id)
@@ -96,34 +98,34 @@ function App(): React.JSX.Element {
     if (!service) return
 
     if (service.status === 'running') {
-      // === 停止 ===
+      // === 停止逻辑 ===
       if (isWindows) {
-        // 🪟 Windows 特殊处理：
-        // 1. 先发送 Ctrl+C，给进程一点时间做清理 (graceful shutdown)
-        window.api.writeTerminal(id, '\u0003')
+        // 🪟 Windows 修复：
+        // 直接强制销毁，不发送 Ctrl+C。
+        // 这样可以绕过 CMD/PowerShell 的 "Terminate batch job (Y/N)?" 询问，
+        // 配合后端的 tree-kill 逻辑，能彻底清除 node.exe 僵尸进程。
+        await window.api.killTerminal(id)
 
-        // 2. 稍等片刻，彻底销毁终端 Shell
-        // 只有销毁了 Shell，onExit 才会触发，状态灯才会变灰
-        setTimeout(async () => {
-          await window.api.killTerminal(id)
-        }, 200)
+        // 强制停止通常不会触发 graceful exit 事件，所以手动更新 UI 为停止
+        setServices((prev) => prev.map((s) => (s.id === id ? { ...s, status: 'stopped' } : s)))
       } else {
         // 🍎 Mac/Linux：
-        // 因为使用了 'exec' 启动，Ctrl+C 会自动连带销毁 Shell，所以只需发信号
+        // 保持优雅退出：发送 Ctrl+C -> 触发进程退出 -> 触发 onExit -> 更新 UI
         window.api.writeTerminal(id, '\u0003')
       }
     } else {
-      // === 启动 ===
+      // === 启动逻辑 ===
       if (!service.command) {
         alert('Please enter a command first.')
         return
       }
 
-      // 每次启动前先复活/初始化终端
+      // 每次启动前先初始化终端（如果已存在后端会忽略，如果已死会复活）
       await window.api.initTerminal(id, service.cwd)
 
       setTimeout(() => {
-        // Windows 不加 exec，Mac/Linux 加 exec 以支持 Ctrl+C 退出整个会话
+        // 🛠️ 启动命令修复：
+        // Windows 不加 exec (因为不支持)，Mac/Linux 加 exec (支持 Ctrl+C 退出 Shell)
         const prefix = isWindows ? '' : 'exec '
         const cmd = `${prefix}${service.command}`
 
@@ -145,12 +147,11 @@ function App(): React.JSX.Element {
 
     // 2. 稍等片刻，重新初始化并运行
     setTimeout(async () => {
-      // 重新初始化 Shell (带上 cwd)
       await window.api.initTerminal(id, service.cwd)
 
-      // 稍等 Shell 加载 prompt，然后发送命令
       setTimeout(() => {
         if (service.command) {
+          // 🛠️ 重启命令修复：同样需要判断系统
           const prefix = isWindows ? '' : 'exec '
           const cmd = `${prefix}${service.command}`
           window.api.writeTerminal(id, `${cmd}\r`)
@@ -163,7 +164,12 @@ function App(): React.JSX.Element {
 
   const activeService = services.find((s) => s.id === activeId)
 
-  if (!loaded) return <div className="h-screen bg-gray-950 text-white flex items-center justify-center">Loading...</div>
+  if (!loaded)
+    return (
+      <div className="h-screen bg-gray-950 text-white flex items-center justify-center">
+        Loading...
+      </div>
+    )
 
   return (
     <div className="flex h-screen w-screen bg-gray-950 text-white overflow-hidden">
